@@ -1,0 +1,743 @@
+---
+title: "Various Power Calcs"
+author: "Zach Madaj"
+output: 
+  html_document:
+    code_folding: hide 
+    code_download: no
+    toc: no
+    toc_float: no
+runtime: shiny
+---
+
+
+```{r, include=FALSE}
+
+options(repos = BiocManager::repositories())
+getOption("repos")
+
+library(knitr)
+library(reshape2)
+library(ggplot2)
+library(viridis)
+library(car)
+library(shiny)
+library(plotly)
+library(powerMediation)
+library(pwr)
+library(dplyr)
+library(data.table)
+library(pwr)
+library(gghalves)
+
+
+opts_chunk$set(echo=FALSE, fig.align='center', warning=FALSE, message=FALSE, dev=c('png','cairo_pdf'), cache=FALSE,error=FALSE,fig.width=10,fig.height=6)
+
+```
+
+
+# Section {.tabset}
+
+## Bimodality {.tabset}
+### Comparing bimodal instability
+
+The first plot shows what the simulated reference (green) and experimental (purple) bimodal population distributions look like based on selected parameters and pilot dataset. The three curves below give power as a function of sample size for testing if: 1) the frequency of the samples in the second mode differs between the two groups, 2) the overall distributions differ (Kolmogorov-Smirnov test), and 3) if the shift of the second mode is significantly different (bigger or smaller) in the experimental group versus reference. 
+
+
+* Parameters in order are:
+  + Total N per condition as a range of sample sizes to try (increments by 5)
+  + Proportion of reference genotype/condition samples in the second mode 
+  + Proportion of experimental genotype/condition samples in the second mode 
+  + Percent shift refers to the mean difference in the second modes between the experimental group and reference.
+    - EG double mutant fat mass is 15% higher than Trim 28
+  + If you want to use a more conservative estimate of the variance of the modes based on their SE. 0% uses the exact SD measures, 95% uses SD measures plus 1.96 x SE
+  + Bodyweight
+    - Mode 1: Mean = 1.053; SD = 0.0847 (SE 0.0062)
+    - Mode 2: Mean = 1.313; SD = 0.0520 (SE 0.0139)
+  + Fat Trim28
+    - Mode 1: Mean = 6.204; SD = 2.000 (SE 0.9317)
+    - Mode 2: Mean = 12.32; SD = 2.000 (SE 0.9524)
+  + Fat Nnat
+    - Mode 1: Mean = 3.928; SD = 2 (SE 0.505)
+    - Mode 2: Mean = 12.32; SD = 2.764 (SE 1.231)
+  + Significance level after multiple testing adjustments
+    - Recommended to use Benjamini-Hochberg
+  + Number of simulations for the KS test.
+    - More = more accurate but longer run time
+
+
+```{r}
+
+rmixnorm= function(n,p1,p2,shift,sel,CI){
+#These were coded backwards, putting easy fix here  
+  p1 = 1-p1
+  p2 = 1-p2
+
+  ref =   case_when(
+
+    sel == "Bodyweight" ~ c(rnorm(round(n*p1,0),1.053,0.08474 + qnorm(1-(1 - CI/100)/2) * 0.0062),rnorm(round(n*(1-p1),0),1.313,0.05196 + qnorm(1-(1 - CI/100)/2)* 0.0139)),
+    
+    sel == "Fat NNAT" ~ c(rnorm(round(n*p1,0),6.204,2 + qnorm(1-(1 - CI/100)/2) *.9317 ),rnorm(round(n*(1-p1),0),12.32,2 + qnorm(1-(1 - CI/100)/2)* 0.9524)),
+    
+    sel == "Fat Trim" ~ c(rnorm(round(n*p1,0),3.928, 2 + qnorm(1-(1 - CI/100)/2) * .505),rnorm(round(n*(1-p1),0),12.32,2.764 + qnorm(1-(1 - CI/100)/2)* 1.231))
+  )
+
+exp =   case_when(
+    
+    sel == "Bodyweight" ~ c(rnorm(round(n*p2,0),1.053,0.08474 + qnorm(1-(1 - CI/100)/2) * 0.0062),rnorm(round(n*(1-p2),0),(1+shift/100)*1.313,0.05196 + qnorm(1-(1 - CI/100)/2)* 0.0139)),
+    
+    sel == "Fat NNAT" ~ c(rnorm(round(n*p2,0),6.204,2 + qnorm(1-(1 - CI/100)/2) *.9317 ),rnorm(round(n*(1-p2),0),(1+shift/100)*12.32,2 + qnorm(1-(1 - CI/100)/2)* 0.9524)),
+    
+    sel == "Fat Trim" ~ c(rnorm(round(n*p2,0),3.928, 2 + qnorm(1-(1 - CI/100)/2) * .505),rnorm(round(n*(1-p2),0),(1+shift/100)*12.32,2.764 + qnorm(1-(1 - CI/100)/2)* 1.231))
+  )
+
+return(data.frame(Group = c(rep("Reference",length(ref)),rep("Experimental",length(exp))) , values = c(ref,exp)))  
+
+}
+
+
+calc_power = function(n,p1,p2,shift,sel,CI,alpha,nsim){
+  
+  Freq = pwr.2p.test(n=n,ES.h(p1=p1,p2=p2), sig.level=alpha)$power
+  
+  delta = case_when(
+    sel == "Bodyweight" ~(1+shift/100)*1.313 - 1.313,
+    
+    sel == "Fat NNAT" ~ (1+shift/100)*12.32 - 12.32,
+    
+    sel == "Fat Trim" ~ (1+shift/100)*12.32 - 12.32
+  )
+    
+  sd = case_when(
+    sel == "Bodyweight" ~ (round(p1*n,0) * (0.08474 + qnorm(1-(1 - CI/100)/2) * 0.0062) + 
+                          round(p2*n,0) * (0.05196 + qnorm(1-(1 - CI/100)/2)* 0.0139))/(round(p1*n,0)+round(p2*n,0)),
+    
+    sel == "Fat NNAT" ~ (round(p1*n,0) * (2 + qnorm(1-(1 - CI/100)/2) *.9317) + 
+                          round(p2*n,0) * (2 + qnorm(1-(1 - CI/100)/2)* 0.9524))/(round(p1*n,0)+round(p2*n,0)),
+    
+    sel == "Fat Trim" ~ (round(p1*n,0) * (2 + qnorm(1-(1 - CI/100)/2) * .505) + 
+                          round(p2*n,0) * (2.764 + qnorm(1-(1 - CI/100)/2)* 1.231))/(round(p1*n,0)+round(p2*n,0))
+  )
+
+  Shift = pwr.t2n.test(n1 = max(floor(.95*p1*n),2), n2 = max(floor(.95*p2*n),2),  d = delta/sd,sig.level=alpha )$power
+  
+  
+   KS = sum(as.numeric(unlist(sapply(1:nsim, function(x){ tmp = rmixnorm(n,p1,p2,shift,sel,CI)
+    I(ks.test(tmp$values[tmp$Group == "Reference"],tmp$values[tmp$Group == "Experimental"])$p.value < 0.05)}))))/nsim
+  
+ 
+   return(data.frame(N=n,Test = c("Frequency","Shift","KS"),Power = c(Freq,Shift,KS)))  
+   
+}   
+
+
+pow_cs = function(ns,p1,p2,shift,sel,CI,alpha,nsim){
+  return(rbindlist(lapply(seq(ns[1],ns[2],5), function(y) calc_power(y,p1,p2,shift,sel,CI,alpha,nsim))))
+}
+
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    ## Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n", 
+                     label = "N per condition",min = 10, max = 200 , value = c(40,50), step = 5),
+        
+        sliderInput("p_giga1", 
+                     label = "Frequency Ref in mode 2",min = .05, max = .95, value = .25, step = .01),
+        
+        sliderInput("p_giga2", 
+                     label = "Frequency Exp in mode 2",min = .05, max = .95, value = .5, step = .01),
+        
+        sliderInput("ps", 
+                     label = "Percent shift of mode 2",min = 0 , max = 200 , value = 15, step = 5),
+        
+        numericInput("CI", 
+                     label = "CI% on SD of modes",min = 0 , max = 99 , value = 0),
+        
+        selectInput("sel", "Reference data:",
+                c("Bodyweight","Fat NNAT","Fat Trim")),
+        
+        numericInput("alpha", 
+                     label="Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+        
+        sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 10000, value = 20, step = 20),
+        
+        width=3
+    
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({
+      
+      
+      pow = pow_cs(ns = input$n,p1 = input$p_giga1 ,p2 = input$p_giga2,shift = input$ps,sel  =input$sel,CI = input$CI,alpha = input$alpha,nsim = input$nsim)
+      
+      
+      pps = rmixnorm(2000,input$p_giga1,input$p_giga2,input$ps,input$sel,input$CI)
+      
+      list(pow = pow,main = pps)
+      })
+
+
+    output$pplt <- renderPlotly({
+      
+      
+      p1 = ggplot(ss()[["pow"]],aes(x=N,y=Power)) +geom_hline(yintercept = 0.8,color="dodgerblue3") + geom_point(size=1) + geom_line() + theme_classic(14)+ylab("Power") + facet_wrap(~Test) + xlab("N per genotype or condition")+theme(legend.text = element_text(10),legend.title = element_blank())
+      fig1 = ggplotly(p1)    
+      p2 = ggplot(ss()[["main"]],aes(x=values,color=Group)) + geom_density() + theme_classic(14)+ylab("Measure") + xlab("Group")+theme(legend.text = element_text(10),legend.title = element_blank())+scale_color_manual(values = viridis(3)[1:2])
+      fig2 = ggplotly(p2)
+      subplot(fig2, fig1, nrows=2,margin=c(0.02,0.02,.1,.1))      
+  })
+  },
+  options = list(height = 1000,width=1000)
+
+)
+
+
+
+
+
+
+```
+
+
+
+
+### Power for testing if mode split != 50:50
+* This calculation quickly looks to see if, in a population of animals that are bimodal, if the proportion of animals in 1 peak/mode is greater than the other
+* User sets the total number of animals to be included and the estimated proportion of animals in one of the modes (the other mode frequency is 1 - this proportion) 
+* Calculates power to determine if the frequencies differ significantly from 0.5
+* The number of simulations determines how many random samples are generated to estimate power
+  + More simulations will be more accurate, but also time consuming
+
+
+```{r}
+
+
+est_pow_bin = function(n,p,alpha,nsim){
+  power = sum(sapply(1:nsim,function(y) as.numeric(I(prop.test(table(factor(rbinom(n,1,p),levels=c(0,1))))$p.value<alpha))))/nsim
+  return(round(power,4))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    ## Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n", 
+                     label = "Total number of samples",min = 3, max = 500, value = 32, step = 1),
+        
+        sliderInput("p", 
+                     label = "Proportion in peak 1 vs peak 2",min = 0.01, max = 0.99, value = .75, step = .01),
+        
+        numericInput("alpha", 
+                     label=  "Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+        
+        sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 1000, value = 100, step = 20),
+        
+        width=3
+    
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({data.frame(var = c(rep("Peak1",round(input$n*input$p)),rep("Peak2",round(input$n*abs(1-input$p)))), power=est_pow_bin(input$n,input$p,input$alpha,input$nsim) ) })
+
+
+    output$pplt <- renderPlotly({
+    ggplotly(ggplot(ss(), aes(x="Counts",color=var,fill=var)) + xlab("") +geom_bar(position="stack") + theme_classic(14) + ggtitle(paste0("Power = ",ss()$power[1]))+scale_color_manual(values=(c("black","dodgerblue3")))+scale_fill_manual(values=(c("black","dodgerblue3"))) + theme(legend.title = element_blank()))
+  })
+  },
+  options = list(height = 800,width=1000)
+
+)
+
+
+
+```
+
+
+
+ 
+```{r ,context='server'}
+## 
+## find_n = function(OR,p,alpha,power){
+#   n=5
+#   while(powerLogisticCon(n=n,p1=p,OR = OR,alpha = alpha)<power & n < 3000){
+#     n = n + 5 
+#   }
+#   return(n)
+# }
+# 
+# shinyApp(
+#   ui = fluidPage(
+#      sidebarLayout(
+# 
+#     # Sidebar to demonstrate various slider options ----
+#       sidebarPanel(
+#         sliderInput("p_giga1", 
+#                      label = "Reference group p1",min = .05, max = .95, value = .25, step = .01),
+#         
+#         sliderInput("p_giga2", 
+#                      label = "Reference group p2",min = .05, max = .95, value = .5, step = .01),
+#         
+#         sliderInput("p_giga3", 
+#                      label = "Reference group p3",min = .05, max = .95, value = .75, step = .01),
+#         
+#         numericInput("alpha", 
+#                      label="Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+#     
+#         numericInput("pow", 
+#                      label = "Power",min = .5, max = .9999, value = .8),
+#         width=3
+#     
+#       ),    
+#      mainPanel(
+#       plotlyOutput("pplt", height = "600px")
+#       )
+#     )
+#   ),
+#   
+#   server = function(input, output) {
+#     ss <- reactive({ data.frame(Proportion =rep(c("Ref 1","Ref 2","Ref 3"),each=length(setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga1-.04,input$p_giga1+0.04,0.01),2)))),
+#                                 n= ceiling(c(sapply((setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga1-.04,input$p_giga1+0.04,0.01),2))/(1-setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga1-.04,input$p_giga1+0.04,0.01),2))))/(input$p_giga1/(1-input$p_giga1)), function(x) find_n(x,input$p_giga1,input$alpha,input$pow)),
+#                                      
+#                                      sapply((setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga2-.04,input$p_giga2+0.04,0.01),2))/(1-setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga2-.04,input$p_giga2+0.04,0.01),2))))/(input$p_giga2/(1-input$p_giga2)), function(x) find_n(x,input$p_giga2,input$alpha,input$pow)),
+#                                      
+#                                      sapply((setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga3-.04,input$p_giga3+0.04,0.01),2))/(1-setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga3-.04,input$p_giga3+0.04,0.01),2))))/(input$p_giga3/(1-input$p_giga3)), function(x) find_n(x,input$p_giga3,input$alpha,input$pow)))/2),
+#                                 
+#                                 NewProbability = c(setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga1-.04,input$p_giga1+0.04,0.01),2)),
+#                                 setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga2-.04,input$p_giga2+0.04,0.01),2)),
+#                                 setdiff(round(seq(.01,.99,.01),2),round(seq(input$p_giga3-.04,input$p_giga3+0.04,0.01),2)))) })
+# 
+# 
+#     output$pplt <- renderPlotly({
+#     ggplotly(ggplot(ss(),aes(x=NewProbability,y=n,color=Proportion,shape=Proportion)) + geom_point(size=1)  + theme_classic(14)+ylab("n per group") + xlab("Proportion Experimental group")+scale_color_manual(values=c("grey90","grey40","black"))+theme(legend.text = element_text(10),legend.title = element_blank()))
+#   })
+#   },
+#   options = list(height = 800,width=1000)
+# 
+# )
+
+
+
+```
+
+
+
+### Sample size calculations for determining if there is more than 1 peak (multimodality)
+* This power calculation is based on Hartigans' Dip Test for Unimodality
+  + Significance in the Dip test implies data have more than one peak/mode
+* User sets the total number of animals to be included and the estimated proportion of animals in one of the modes (the other mode frequency is 1 - this proportion) 
+* The calculation then returns the power for the proposed sample size, alpha, and standardized distance between modes
+* The number of simulations determines how many random samples are generated to estimate power. 
+  + More simulations will be more accurate, but also time consuming
+
+
+
+
+```{r}
+
+
+est_pow = function(n,p,alpha,x,nsim){
+  power = sum(sapply(1:nsim,function(y) as.numeric(I(dip.test( c(rnorm(round(n*p),0,1),rnorm(round(n*abs((1-p))),x,1)))$p.value<alpha))))/nsim
+  return(round(power,4))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    # Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n", 
+                     label = "Total number of samples",min = 3, max = 500, value = 32, step = 1),
+        
+        sliderInput("p", 
+                     label = "Proportion in peak 1 vs peak 2",min = 0.01, max = 0.99, value = .5, step = .01),
+        
+        numericInput("alpha", 
+                     label=  "Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+        
+        numericInput("dist", 
+                     label="Distance between peaks (SD = 1)", value=5, min = 3, max = 10,step=.05),
+         
+        sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 1000, value = 100, step = 20),
+        
+        width=3
+    
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({data.frame(var = c(rnorm(ceiling(2000*input$p),0,1),rnorm(ceiling(2000*abs(input$p-1)),input$dist,1)) ,power = rep(est_pow(input$n,input$p,input$alpha,input$dist,input$nsim)),n1 = rep(round(input$n * input$p)),n2=rep(round(abs(input$n * (1-input$p)))),dist=rep(input$dist))  })
+
+
+    output$pplt <- renderPlotly({
+    ggplotly(ggplot() +geom_density(data=ss(),aes(x=var)) + theme_classic(14)+ylab("Population density") + xlab("Modes")+theme(legend.text = element_text(10),legend.title = element_blank(),axis.text.x = element_blank(),axis.line.x = element_blank()) +  geom_path(data=NULL,aes(x=c(0,0,ss()$dist[1],ss()$dist[1]),y=c(.47,.48,.48,.47))) + scale_x_continuous(limits=c(-5,15)) + scale_y_continuous(limits=c(0,.5)) + geom_text(aes(x=ss()$dist[1]/2,y=.49,label=paste0("\U0394 ",ss()$dist[1]))) + geom_text(aes(x=ss()$dist[1]/2,y=.47,label=paste0("Power = ", ss()$power[1])),color="dodgerblue3") +
+geom_text(aes(x=0,y=.03,label=paste0("n1 = ", ss()$n1[1])))+
+geom_text(aes(x=ss()$dist[1],y=.03,label=paste0("n2 = ", ss()$n2[1]))))
+  })
+  },
+  options = list(height = 800,width=1000)
+
+)
+
+
+
+
+```
+
+
+
+
+### Power curves for testing if there is more than 1 peak (multimodality)
+* This power calculation is based on Hartigans' Dip Test for Unimodality
+  + Significance in the Dip test implies data have more than one peak/mode
+* User can alter the sample size of each mode
+  + That is the number of animals in one mode and separately the number in the other mode
+* The calculation then returns the power for varying effect sizes
+  + Effect size here is the standardized distance between the two peaks/modes
+* The number of simulations determines how many random samples are generated to estimate power. 
+  + More simulations are better and will produce a smoother curve, but are time consuming
+
+
+```{r}
+library(diptest)
+
+
+find_dist = function(n1,n2,alpha,nsim){
+  power = sapply(seq(.25,10,.25), function(z)  sum(sapply(1:nsim,function(y) as.numeric(I(dip.test( c(rnorm(n1,0,1),rnorm(n2,z,1)))$p.value<alpha))))/nsim)
+  return(data.frame(Distance = seq(.25,10,.25), power ))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    # Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n1", 
+                     label = "Number of Samples in Mode 1",min = 3, max = 100, value = 16, step = 1),
+        
+        sliderInput("n2", 
+                     label = "Number of Samples in Mode 2",min = 3, max = 100, value = 16, step = 1),
+        
+        numericInput("alpha", 
+                     label="Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+        
+                sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 1000, value = 20, step = 20),
+        
+        width=3
+    
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({find_dist(input$n1,input$n2,input$alpha,input$nsim) })
+
+
+    output$pplt <- renderPlotly({
+    ggplotly(ggplot(ss(),aes(x=Distance,y=power)) +geom_hline(yintercept = 0.8,color="dodgerblue3") + geom_point(size=1) + geom_line() + theme_classic(14)+ylab("Power") + xlab("Standardized distance between modes")+theme(legend.text = element_text(10),legend.title = element_blank()))
+  })
+  },
+  options = list(height = 800,width=1000)
+
+)
+
+
+
+
+```
+
+
+
+
+### Power curves for Specific datasets
+* This power calculation is based on the R package 'multimode' and uses the default method from the 'modetest' function ACR (https://arxiv.org/pdf/1609.05188.pdf). 10,000 simulations were used per dataset to estimate power assuming N=100 and a mixture of Gaussians.
+  + Significance in this test implies data have more than one peak/mode
+* The three datasets used as reference have the following bimodal estimates
+  + Bodyweight
+    - Mode 1: Mean = 1.053 (SE 0.0057); SD = 0.0847 (SE 0.0062)
+    - Mode 2: Mean = 1.313 (SE 0.0087); SD = 0.0520 (SE 0.0139)
+  + Fat Trim28
+    - Mode 1: Mean = 6.204 (SE 0.9509); SD = 2.000 (SE 0.9317)
+    - Mode 2: Mean = 12.32 (SE 0.7383); SD = 2.000 (SE 0.9524)
+  + Fat Nnat
+    - Mode 1: Mean = 3.928 (SE 0.4837); SD = 2 (SE 0.505)
+    - Mode 2: Mean = 12.32 (SE 0.7383); SD = 2.764 (SE 1.231)
+* User can adjust the proportion of samples in mode 1 (ie 100 x p rounded to nearest whole), the second mode is then 1 minus this proportion (ie  100 x (1-p) rounded to nearest whole)
+* The three sets of estimates represent 3 different levels of conservatism
+  + Exact: the exact estimates are used 
+  * Mid: each estimate is +/- 1SE such that the means are moved closer together and the SD is expanded for both (i.e. *mean_mode1 + 1SE, mean_mode2 - 1SE,SD1 + 1SE, SD2 + 1SE*). This is a fairly conservative approach, and is likely sufficient for covering most bases in a sample size calculation. 
+  + Worst: the worst case scenario uses the 95% Confidence bounds to move the modes closer together and maximize SD. In many situations, this results in a uni-modal distribution; this is a very very conservative estimate, but being well-powered for this scenario nearly guarantees detecting bimodality.
+  + Future iterations of this simulation will attempt to add additional cases: 'optimistic' and 'Exact with more variance'
+* The first set of plots is the assumed population distribution for each set of estimates and gives a good visual of how these data look as the proportion of animals from each mode varies. 
+* The second set of plots is power by percentage in mode 1. 
+* A more distant version of these calcs will allow user to modify means, sd, and proportion
+
+
+
+```{r, figure.width=10,figure.height=10}
+# library(multimode)
+library(patchwork)
+
+load(file = "POSA_sims.rda")
+
+rmixnor= function(n=100,p,m1,m2,s1,s2){
+  return(c(rnorm(round(n*p,1),m1,s1),rnorm(round(n*(1-p),1),m2,s2)))
+}
+
+p=.5
+BW_HET = data.frame(exact = c(100,p,1.053,1.313,0.08474,0.05196),
+                    worst = c(100,p,1.067,1.293,0.09941,0.08480),
+                    mid = c(100,p,1.053+0.00571,1.313-0.008713,
+                            0.08474+0.0062,0.05196+0.01389))
+
+
+FAT_TRIM = data.frame(exact = c(100,p,6.204+0*0.9509,12.32-0*0.7383,2+0*0.9317,2+0*0.9524),
+                     worst = c(100,p,6.204+1.96*0.9509,12.32-1.96*0.7383,2+1.96*0.9317,2+1.96*0.9524),
+                     mid = c(100,p,6.204+1*0.9509,12.32-1*0.7383,2+1*0.9317,2+1*0.9524))
+
+
+FAT_NNAT= data.frame(exact = c(100,p,3.928+0*0.4837,12.32-0*0.7383,2+0*.505,2.764+0*1.231),
+                     worst = c(100,p,3.928+1.96*0.4837,12.32-1.96*0.7383,2+1.96*.505,2.764+1.96*1.231),
+                     mid = c(100,p,3.928+1*0.4837,12.32-1*0.7383,2+1*.505,2.764+1*1.231))
+
+
+res_bw$Dataset = rep("Bodyweight")
+res_nnat$Dataset = rep("Fat Nnat")
+res_trim$Dataset = rep("Fat Trim28")
+
+
+power.d = rbind(res_bw,res_trim,res_nnat)
+colnames(power.d)[1] = "Estimate"
+
+get_bimods = function(p1){
+  
+  ss1 = rbind(data.frame(Estimate = rep("Exact"),value = rmixnor(5000,p1,BW_HET$exact[3],BW_HET$exact[4],BW_HET$exact[5],BW_HET$exact[6])),
+              data.frame(Estimate =rep("Worst"),value = rmixnor(5000,p1,BW_HET$worst[3],BW_HET$worst[4],BW_HET$worst[5],BW_HET$worst[6])),
+              data.frame(Estimate =rep("Middle"),value = rmixnor(5000,p1,BW_HET$mid[3],BW_HET$mid[4],BW_HET$mid[5],BW_HET$mid[6])))
+  
+  ss1$Dataset = rep("Bodyweight")
+  
+  ss2 = rbind(data.frame(Estimate = rep("Exact"),value = rmixnor(5000,p1,FAT_TRIM$exact[3],FAT_TRIM$exact[4],FAT_TRIM$exact[5],FAT_TRIM$exact[6])),
+              data.frame(Estimate =rep("Worst"),value = rmixnor(5000,p1,FAT_TRIM$worst[3],FAT_TRIM$worst[4],FAT_TRIM$worst[5],FAT_TRIM$worst[6])),
+              data.frame(Estimate =rep("Middle"),value = rmixnor(5000,p1,FAT_TRIM$mid[3],FAT_TRIM$mid[4],FAT_TRIM$mid[5],FAT_TRIM$mid[6])))
+  ss2$Dataset = rep("Fat Trim28")
+  
+  ss3 = rbind(data.frame(Estimate = rep("Exact"),value = rmixnor(5000,p1,FAT_NNAT$exact[3],FAT_NNAT$exact[4],FAT_NNAT$exact[5],FAT_NNAT$exact[6])),
+              data.frame(Estimate =rep("Worst"),value = rmixnor(5000,p1,FAT_NNAT$worst[3],FAT_NNAT$worst[4],FAT_NNAT$worst[5],FAT_NNAT$worst[6])),
+              data.frame(Estimate =rep("Middle"),value = rmixnor(5000,p1,FAT_NNAT$mid[3],FAT_NNAT$mid[4],FAT_NNAT$mid[5],FAT_NNAT$mid[6])))
+  ss3$Dataset = rep("Fat Nnat")
+  
+  data.bi = rbind(ss1,ss2,ss3)
+  
+  return(return(data.bi))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    # Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("p1", 
+                     label = "Proportion of Samples in Mode 1",min = 0.08, max = 0.93, value = 0.53, step = .05),
+        width=3
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({get_bimods(input$p1) })
+
+
+    output$pplt <- renderPlotly({
+      
+      p1 = ggplotly(ggplot(ss(),aes(x=value,color=Estimate)) +geom_density() + facet_wrap(~Dataset,scale="free")+theme_classic()+theme(legend.position = "bottom"))
+      
+      p2 = ggplotly(ggplot(power.d,aes(proportion,y=power,color=Estimate)) + geom_line()+geom_point()+ facet_wrap(~Dataset,scales="free_y")+theme_classic()+geom_vline(xintercept = input$p1,linetype=2)+scale_y_continuous(limits=c(0,1),breaks=seq(0,1,.25))+theme(legend.position = "bottom") )
+      
+
+      
+      subplot(p1, p2, nrows=2)
+
+      
+  })
+  },
+  options = list(height = 800,width=1000)
+
+)
+
+
+
+
+```
+
+
+## Unequal variances {.tabset}
+
+### Sample size estimates for heterogenity of variances
++ Based on a simple F test for heteroskedasticity
+ + Significance here implies variances differ
+* User sets the total number of animals to be included and the estimated proportion of animals in one of the modes (the other mode frequency is 1 - this proportion) 
+* The calculation then returns the power for varying effect sizes
+  + Effect size here is the ratio of variances (e.g. variance of mode 1 is twice the variance of the other)
+* The number of simulations determines how many random samples are generated to estimate power. 
+  + More simulations will be more accuarte, but also time consuming
+
+
+
+```{r}
+
+
+est_pow_het = function(n,p,alpha,x,nsim){
+  power = sum(sapply(1:nsim,function(y) as.numeric((I(ols_test_f(lm(val~g,data.frame(val = c(rnorm(round(n*p),0,1),rnorm(round(n*abs((1-p))),0,x)),g=c(rep("x",round(n*p)),rep("y",round(n*abs(1-p)))))))$p<alpha)))))/nsim
+  return(round(power,4))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    ## Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n", 
+                     label = "Total number of samples",min = 3, max = 500, value = 32, step = 1),
+        
+        sliderInput("p", 
+                     label = "Proportion in peak 1 vs peak 2",min = 0.01, max = 0.99, value = .5, step = .01),
+        
+        numericInput("alpha", 
+                     label=  "Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+        
+        numericInput("dist", 
+                     label="Ratio of variances", value=5, min = 3, max = 10,step=.05),
+         
+        sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 1000, value = 100, step = 20),
+        
+        width=3
+    
+      ),    
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+  
+  server = function(input, output) {
+    ss <- reactive({data.frame(var = c(rnorm(ceiling(2000*input$p),0,1),rnorm(ceiling(2000*abs(input$p-1)),0,input$dist)) ,power = rep(est_pow_het(input$n,input$p,input$alpha,input$dist,input$nsim)),Mode = c(rep("SD = 1",round(2000* input$p)),rep(paste0("SD = ", input$dist),rep(round(abs(2000* (1-input$p)))))),dist=rep(input$dist))  })
+
+
+    output$pplt <- renderPlotly({
+    ggplotly(ggplot() +geom_density(data=ss(),aes(x=var,color=Mode)) + theme_classic(14)+ylab("Population density") + xlab("Modes")+theme(legend.text = element_text(10),legend.title = element_blank(),axis.text.x = element_blank(),axis.line.x = element_blank())+scale_color_manual(values=c("black","dodgerblue3")) +geom_text(aes(x=0,y=.5,label=paste0("Power = ",ss()$power[1])))) 
+  })
+  },
+  options = list(height = 800,width=1000)
+
+)
+
+
+
+
+```
+
+
+### Power curves for heterogenity of variances
++ Based on a simple F test for heteroskedasticity
+ + Significance here implies variances differ
+* User can alter the sample size of each of the two groups being compared (e.g. modes, treatment groups, genotypes, etc)
+* The calculation then returns the power for varying effect sizes
+  + Effect size here is the ratio of variances (e.g. variance of mode 1 is twice the variance of the other)
+* The number of simulations determines how many random samples are generated to estimate power. 
+  + More simulations are better and will produce a smoother curve, but are time consuming
+
+
+```{r}
+
+library(olsrr)
+
+
+find_dist = function(n1,n2,alpha,nsim){
+  power = sapply(seq(1.25,5,.25), function(z)  sum(sapply(1:nsim,function(y) as.numeric(I(ols_test_f(lm(val~g,data.frame(val = c(rnorm(n1,0,1),rnorm(n2,0,z)),g=c(rep("x",n1),rep("y",n2)))))$p<alpha))))/nsim)
+  return(data.frame(Distance = seq(1.25,5,.25), power ))
+}
+
+shinyApp(
+  ui = fluidPage(
+     sidebarLayout(
+
+    ## Sidebar to demonstrate various slider options ----
+      sidebarPanel(
+        sliderInput("n1",
+                     label = "Number of Samples in Mode 1",min = 3, max = 100, value = 16, step = 1),
+
+        sliderInput("n2",
+                     label = "Number of Samples in Mode 2",min = 3, max = 100, value = 16, step = 1),
+
+        numericInput("alpha",
+                     label="Significance level adjusted for multiple testing", value=0.05, min = 0.00000001, max = 0.1),
+
+        sliderInput("nsim", 
+                     label = "Number of simulations",min = 20, max = 1000, value = 20, step = 20),
+        
+        
+        width=3
+
+      ),
+     mainPanel(
+      plotlyOutput("pplt", height = "600px")
+      )
+    )
+  ),
+
+  server = function(input, output) {
+    ss <- reactive({find_dist(input$n1,input$n2,input$alpha,input$nsim) })
+
+
+    output$pplt <- renderPlotly({
+    ggplotly(ggplot(ss(),aes(x=Distance,y=power))+geom_hline(yintercept = 0.8,color="dodgerblue3") + geom_point(size=1) + geom_line() + theme_classic(14)+ylab("Power") + xlab("Standardized distance between modes")+theme(legend.text = element_text(10),legend.title = element_blank()))
+  })
+  },
+  options = list(height = 800,width=1000)
+  
+)
+
+
+```
+
+
+
+
+
+
